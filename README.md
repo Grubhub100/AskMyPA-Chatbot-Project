@@ -1,5 +1,5 @@
-# askmyphysician-AI
-# 🩺 MedConnect AI
+# 🩺 askmyphysician-AI
+
 
 MedConnect AI is an intelligent healthcare assistant designed to triage patient symptoms through natural conversation and guide users toward appropriate telemedicine consultations.
 
