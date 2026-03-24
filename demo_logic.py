@@ -20,7 +20,7 @@ def get_demo_response(user_input: str, state: dict = None) -> (str, dict):
     step = state.get("step", "idle")
 
     # --- Emergency check (always top priority) ---
-    emergency_keywords = ["can't breathe", "cannot breathe", "chest pain", "unconscious", "stroke", "heart attack", "heart pain", "severe bleeding", "emergency"]
+    emergency_keywords = ["can't breathe", "cannot breathe", "chest pain", "unconscious", "stroke", "heart attack", "heart pain", "severe bleeding", "emergency", "heavy bleeding", "bleeding heavily", "suicidal", "overdose"]
     if any(s in u_low for s in emergency_keywords):
         return "⚠️ **EMERGENCY**: Please call 911 or go to the ER immediately.", state
 
@@ -49,11 +49,19 @@ def get_demo_response(user_input: str, state: dict = None) -> (str, dict):
         ]
         return any(re.search(p, text) for p in patterns)
 
-    def has_age_sex(text):
+    def has_age(text):
+        """Check for age patterns."""
         patterns = [
-            r"\b\d+\s*(year|yr)s?\s*(old)?\b",
+            r"\b\d{1,3}\s*(year|yr)s?\s*(old)?\b",
+            r"\b\d{1,3}\b"
+        ]
+        return any(re.search(p, text) for p in patterns)
+
+    def has_sex(text):
+        """Check for biological sex patterns."""
+        patterns = [
             r"\bmale\b", r"\bfemale\b",
-            r"\b\d+[mf]\b"
+            r"\b\d{1,3}\s*[mf]\b"
         ]
         return any(re.search(p, text) for p in patterns)
 
@@ -65,18 +73,36 @@ def get_demo_response(user_input: str, state: dict = None) -> (str, dict):
             bool(re.search(r"\b0+\s*(year|yr)s?\s*(old)?\b", text))
         )
 
+    def is_gibberish(text):
+        """Check for nonsensical characters or gibberish like '#@$@%' or 'dsg'."""
+        # 1. Purely non-alphanumeric (e.g. #@$@%)
+        if bool(re.fullmatch(r"[\W\d_]+", text)) and len(text) > 0:
+            return True
+        # 2. Very short and no vowels, but not 'no', 'none', 'na'
+        if len(text.replace(" ", "")) < 3 and not any(v in text for v in "aeiouy") and text not in ["no", "na"]:
+            return True
+        # 3. No vowels in a longer string (e.g. 'dsg', 'qwrt')
+        if not any(v in text for v in "aeiouy") and len(text) >= 3 and text not in ["none", "mhm", "brb"]:
+            return True
+        return False
+
+    # --- Global Gibberish Check ---
+    if is_gibberish(u_low):
+        return "I'm sorry, I didn't quite understand that. It looks like there might be a typing mistake. Could you please describe your symptoms or how you're feeling so I can help? 🩺", state
+
     # --- Logic ---
     if step == "idle":
         # Check for ALL requirements at once (Symptoms + Duration + Age/Sex)
         s_found = has_symptoms(u_low)
         d_found = has_duration(u_low)
-        a_found = has_age_sex(u_low)
+        a_found = has_age(u_low)
+        sex_found = has_sex(u_low)
 
         if s_found:
             state["user_symptoms"] = u_low
             if d_found: state["duration_known"] = True
 
-            if d_found and a_found:
+            if d_found and a_found and sex_found:
                 state["step"] = "done"
                 return (
                     f"Hello! 👋 Based on your symptoms and the details provided, **a professional telemedicine consultation is strongly recommended**.\n\n"
@@ -84,10 +110,11 @@ def get_demo_response(user_input: str, state: dict = None) -> (str, dict):
                     state
                 )
             
-            # Start triage if not all info is present
+            # Start triage if not all info is present: Always check for more symptoms first
             state["step"] = "exploring_more"
             return (
-                "Hello! 👋 I'm sorry to hear you're not feeling well. 😔 "
+                f"Hello! 👋 I'm sorry to hear you're not feeling well. 😔 "
+                f"I see it's been going on for {u_low if d_found and not state['duration_known'] else 'a bit'}. "
                 "I'd like to ask you a few questions to better understand your condition.\n\n"
                 "Besides what you mentioned, **are you experiencing any other symptoms** "
                 "such as body aches, chills, fatigue, or difficulty sleeping?",
@@ -113,7 +140,7 @@ def get_demo_response(user_input: str, state: dict = None) -> (str, dict):
                 state
             )
 
-        return "I'm here to help with your health concerns. Please describe how you're feeling and I'll guide you. 🩺", state
+        return "I'm sorry, I didn't quite understand that. It looks like there might be a typing mistake. Could you please describe your symptoms or how you're feeling so I can help? 🩺", state
 
     if step == "exploring_more":
         state["user_symptoms"] += " | " + u_low
@@ -126,6 +153,9 @@ def get_demo_response(user_input: str, state: dict = None) -> (str, dict):
         )
 
     if step == "exploring_severity":
+        if not re.search(r"\b([1-9]|10)\b", u_low):
+            return "Please provide proper data including a severity rating on a scale of 1 to 10.", state
+
         if state["duration_known"]:
             state["step"] = "awaiting_age_sex"
             return "I see. To provide the most accurate guidance, **could you please tell me your age and biological sex?** (e.g. '32 years old, female')", state
@@ -134,10 +164,10 @@ def get_demo_response(user_input: str, state: dict = None) -> (str, dict):
             return "I understand. **How long have you been experiencing these symptoms?** (e.g. '2 days', '1 week', 'since yesterday')", state
 
     if step == "awaiting_duration":
-        if is_invalid_zero(u_low):
+        if is_invalid_zero(u_low) or not has_duration(u_low):
             return (
                 "That doesn't seem right. "
-                "**Please provide the correct duration** — for example, '2 days', '1 week', or 'since yesterday'.",
+                "**Please provide proper data for your duration** — for example, '2 days', '1 week', or 'since yesterday'.",
                 state
             )
         state["duration_known"] = True
@@ -145,11 +175,21 @@ def get_demo_response(user_input: str, state: dict = None) -> (str, dict):
         return "Understood. To provide the most accurate guidance, **could you please tell me your age and biological sex?** (e.g. '32 years old, female')", state
 
     if step == "awaiting_age_sex":
-        if is_invalid_zero(u_low):
+        age_in = has_age(u_low)
+        sex_in = has_sex(u_low)
+        
+        if is_invalid_zero(u_low) or not (age_in and sex_in):
+            # Help the user by telling them what is missing
+            missing = []
+            if not age_in: missing.append("age")
+            if not sex_in: missing.append("biological sex")
+            
+            missing_text = " and ".join(missing)
+            
             return (
-                "That doesn't seem correct. "
-                "**Please provide your actual age and biological sex** so I can assist you properly "
-                "(e.g. '32 years old, female').",
+                f"I'm sorry, it looks like your **{missing_text}** is missing or was typed incorrectly. "
+                "**Please provide both your age and biological sex** together so I can assist you properly "
+                "(e.g., '32 years old, female').",
                 state
             )
         state["step"] = "done"

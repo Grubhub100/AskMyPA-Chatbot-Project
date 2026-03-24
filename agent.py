@@ -1,8 +1,8 @@
 import os
+import time
+import traceback
 import streamlit as st
 import markdown
-import json
-import threading
 import re
 from datetime import datetime
 from dotenv import load_dotenv
@@ -15,7 +15,7 @@ from langchain.callbacks.base import BaseCallbackHandler
 # -------------------------------------------------
 # 1. Setup & Config
 # -------------------------------------------------
-load_dotenv()
+load_dotenv(override=True)
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 st.set_page_config(page_title="AskMyPhysician Associate AI", page_icon="🩺", layout="centered")
@@ -167,15 +167,18 @@ system_prompt = f"""You are **AskMyPhysician Associate AI**, a professional and 
 **Your Goal**: Triage symptoms and guide the patient toward a telemedicine consultation.
 
 **Interaction Flow**:
-1. **Greetings**: If the user says "hi" or "hello", greet warmly and ask for their symptoms.
-2. **Comprehensive Info**: If the user provides symptoms, duration, age, and sex ALL AT ONCE in the first message, acknowledge them and provide the booking link IMMEDIATELY.
-3. **Emergency**: If emergency symptoms (chest pain, stroke, breathing issue), instruct them to call 911 immediately.
-4. **Step-by-Step Triage**:
-   - If only symptoms are provided, ask for duration.
-   - Once duration is provided, ask for age and biological sex.
-5. **Final Step**: Once all information (symptoms, duration, age, sex) is collected, ALWAYS provide the telemedicine booking link: {BOOKING_LINK}
+1. **Emergency (CRITICAL)**: If the user mentions emergency symptoms such as **chest pain, difficulty breathing, stroke symptoms (facial drooping, arm weakness, slurred speech), severe allergic reaction, or HEAVY BLEEDING**, you must IMMEDIATELY STOP triage and instruct them: "⚠️ **EMERGENCY**: Please stop using this tool and call 911 or visit the nearest Emergency Room immediately. Your symptoms require urgent medical attention." Do NOT provide a booking link for emergency symptoms.
+2. **Greetings**: If the user says "hi" or "hello", greet warmly and ask for their symptoms.
+3. **Handle Nonsense/Gibberish**: If the user provides input that is clearly nonsense, gibberish, or completely unrelated characters (e.g., "asdf", "#@$%", "1234"), do NOT assume they are frustrated. Instead, politely state: "I'm sorry, I didn't quite understand that. It looks like there might be a typing mistake. Could you please describe your symptoms or how you're feeling so I can assist you?"
+4. **Comprehensive Info**: If the user provides symptoms, duration, age, and sex ALL AT ONCE in the first message, acknowledge them and provide the booking link IMMEDIATELY (unless an emergency is detected).
+5. **Step-by-Step Triage**:
+   - If only symptoms are provided (e.g., "I have a headache"), ask for duration (e.g., "How long have you had this?").
+   - Once duration is provided (e.g., "3 days"), ask: "Besides what you mentioned, **are you experiencing any other symptoms** such as body aches, chills, fatigue, or difficulty sleeping?"
+   - Once they answer about other symptoms (or say "no"), ask for **age and biological sex**.
+   - **MANDATORY**: You MUST have BOTH the patient's age AND biological sex before providing any medical recommendations or the booking link. If the user provides only one (e.g., just age), or tries to skip this step, politely explain that this information is essential for a safe and accurate medical triage and ask for the missing detail again.
+6. **Final Step**: ONLY after ALL information (symptoms, duration, other symptoms check, age, AND biological sex) has been collected, should you provide the telemedicine booking link: {BOOKING_LINK}
 
-**Crucial Note**: If the user provides multiple pieces of information at once, do NOT ask for them again. Process all provided details and move to the next logical step or provide the link if triage is complete.
+**Crucial Note**: If the user provides multiple pieces of information at once, do NOT ask for them again. Process all provided details and move to the next logical step. Never provide the booking link until the triage is fully complete with all required data points.
 """
 
 if OPENAI_API_KEY:
@@ -195,14 +198,20 @@ if OPENAI_API_KEY:
 else:
     agent_executor = None
 
-# Custom Stream Handler
 class HTMLStreamHandler(BaseCallbackHandler):
     def __init__(self, container):
         self.container = container
         self.text = ""
+        self.token_count = 0
 
     def on_llm_new_token(self, token, **kwargs):
         self.text += token
+        self.token_count += 1
+        
+        # Update every 5 tokens for a fast yet smooth streaming experience
+        if self.token_count % 5 != 0:
+            return
+            
         try:
             html = markdown.markdown(self.text)
         except:
@@ -219,8 +228,8 @@ class HTMLStreamHandler(BaseCallbackHandler):
 # 4. Chat Interface and Utilities
 # -------------------------------------------------
 
-def get_demo_response(user_input: str) -> str:
-    """Return a canned response used when the OpenAI agent is unavailable."""
+def get_demo_response(user_input: str, placeholder=None) -> str:
+    """Return a canned response instantly; simulate streaming for better UX."""
     from demo_logic import get_demo_response as get_demo
     
     # Initialize state if not in session_state
@@ -236,6 +245,27 @@ def get_demo_response(user_input: str) -> str:
     
     # Save back to session_state
     st.session_state.demo_state = new_state
+    
+    # Simulated Streaming for Demo Mode (fast, chunks of 4 words at a time)
+    if placeholder:
+        full_text = ""
+        words = reply.split(" ")
+        for i, word in enumerate(words):
+            full_text += word + (" " if i < len(words) - 1 else "")
+            # Update every 4 words for a fast, natural feel
+            if i % 4 == 0 or i == len(words) - 1:
+                try:
+                    html = markdown.markdown(full_text)
+                except:
+                    html = full_text
+                placeholder.markdown(f"""
+                <div style="display: flex; justify-content: flex-start; margin-bottom: 10px; align-items: flex-end;">
+                    <div style="background-color: transparent; color: #1e293b; padding: 10px 15px; max-width: 75%; font-family: sans-serif; text-align: left;">
+                        {html}
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+                time.sleep(0.02) # Minimal delay — just enough to feel natural
     
     return reply
 
@@ -277,12 +307,15 @@ if user_input:
         st.rerun()
 
     except Exception as e:
+        import traceback
+        with open("error_log.txt", "a", encoding="utf-8") as f:
+            f.write(f"OPENAI EXCEPTION: {e}\n{traceback.format_exc()}\n")
         # Fallback / Demo Logic
         err = str(e).lower()
-        if "quota" in err or "429" in err or "key" in err or "auth" in err or "no api key" in err:
-            reply = get_demo_response(user_input)
+        if "quota" in err or "429" in err or "key" in err or "auth" in err or "no api key" in err or "demo mode" in err:
+            reply = get_demo_response(user_input, placeholder)
             st.session_state.chat_history[-1] = (user_input, reply)
-            display_message(reply, "assistant")
+            # No need to display_message here as simulated streaming handles it in placeholder
             placeholder.empty()
             st.rerun()
         else:
