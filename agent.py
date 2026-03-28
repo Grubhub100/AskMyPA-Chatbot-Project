@@ -11,12 +11,22 @@ from langchain_openai import ChatOpenAI
 from langchain.agents import create_tool_calling_agent, AgentExecutor
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain.callbacks.base import BaseCallbackHandler
+import config
 
 # -------------------------------------------------
 # 1. Setup & Config
 # -------------------------------------------------
-load_dotenv(override=True)
+print(f"DEBUG: Running agent.py from {os.path.abspath(__file__)}")
+load_dotenv(os.path.join(os.path.dirname(__file__), '.env'), override=True)
+
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+if OPENAI_API_KEY:
+    # Strip quotes
+    OPENAI_API_KEY = OPENAI_API_KEY.strip('"'+"'")
+    st.sidebar.success(f"!!! 🚀 RUNNING WITH OPENAI API 🚀 (Key: {OPENAI_API_KEY[:6]}..., length: {len(OPENAI_API_KEY)})")
+else:
+    st.sidebar.warning("!!! 🟢 RUNNING IN DEMO MODE (Local Logic) 🟢 !!!")
+    st.sidebar.info("To use OpenAI, add a valid key to the OPENAI_API_KEY variable in your .env file.")
 
 st.set_page_config(page_title="AskMyPhysician Associate AI", page_icon="🩺", layout="centered")
 
@@ -111,11 +121,14 @@ def display_message(text, sender):
         </div>
         """
     else:
-        # AI: LEFT Aligned, Minimalist (White/Transparent)
+        # Replacement for raw URL as per latest requirement
+        text_with_link = text.replace("{{BOOK a telemedicine Consultation}}", BOOKING_LINK)
+        text_with_link = text_with_link.replace("[BOOKING_LINK]", BOOKING_LINK)
+        
         try:
-            text_html = markdown.markdown(text)
+            text_html = markdown.markdown(text_with_link)
         except:
-            text_html = text
+            text_html = text_with_link
             
         msg_html = f"""
         <div style="display: flex; justify-content: flex-start; margin-bottom: 10px; align-items: flex-end;">
@@ -135,19 +148,8 @@ st.markdown(f'<div class="timestamp"><span>Consult started: Today, {datetime.now
 # -------------------------------------------------
 # 3. AI & Logic Setup
 # -------------------------------------------------
-TREATED_CONDITIONS = """
-Our providers offer a wide range of services, including:
-- **General health consultations**
-- **Management of acute symptoms**: Cold, flu-like symptoms, sore throat, sinus infection, ear infection, fever, pink eye, cough, allergies & hay fever.
-- **Infections**: UTIs, vaginal discharge, yeast infections, minor skin Complaints(acne, eczema, rashes, minor cuts).
-- **Gastrointestinal**: Nausea, vomiting, upset stomach, stomach pain, digestive issues.
-- **Respiratory**: Asthma, allergies, or cough.
-- **Mental health support**: Stable conditions on medications (minor depression/anxiety).
-- **Wellness & Lifestyle**: Weight management (GLP-1 prescription & lifestyle), coaching, international travel advice, vaccine recommendations, hormone imbalances, sexual health.
-- **Medication refills**: Unscheduled prescriptions only.
-- **Urgent Care**: If it's an urgent care complaint, our providers can help.
-"""
-BOOKING_LINK = "https://www.optimantra.com/optimus/patient/patientaccess/servicesall?pid=U1o5cWpLTytaNDBMRU1DM1VRdE1ZZz09&lid=SWZ6WStZeWdvblZwMWJZQy96MUJkUT09"
+TREATED_CONDITIONS = config.TREATED_CONDITIONS
+BOOKING_LINK = config.BOOKING_LINK
 
 system_prompt = f"""You are **AskMyPhysician Associate AI**, a professional and personable medical assistant.
 
@@ -176,21 +178,27 @@ system_prompt = f"""You are **AskMyPhysician Associate AI**, a professional and 
    - Once duration is provided (e.g., "3 days"), ask: "Besides what you mentioned, **are you experiencing any other symptoms** such as body aches, chills, fatigue, or difficulty sleeping?"
    - Once they answer about other symptoms (or say "no"), ask for **age and biological sex**.
    - **MANDATORY**: You MUST have BOTH the patient's age AND biological sex before providing any medical recommendations or the booking link. If the user provides only one (e.g., just age), or tries to skip this step, politely explain that this information is essential for a safe and accurate medical triage and ask for the missing detail again.
-6. **Final Step**: ONLY after ALL information (symptoms, duration, other symptoms check, age, AND biological sex) has been collected, should you provide the telemedicine booking link: {BOOKING_LINK}
+6. **Final Step**: ONLY after ALL information (symptoms, duration, other symptoms check, age, AND biological sex) has been collected, should you provide the telemedicine booking link exactly as: [BOOKING_LINK]
 
-**Crucial Note**: If the user provides multiple pieces of information at once, do NOT ask for them again. Process all provided details and move to the next logical step. Never provide the booking link until the triage is fully complete with all required data points.
+**Crucial Note**: 
+- If the user provides multiple pieces of information at once (e.g., "I am a 23 year old girl"), do NOT ask for them again. Process both age (23) and biological sex (female) immediately.
+- Never provide a raw URL or external link. Use the [BOOKING_LINK] marker ONLY.
 """
 
 if OPENAI_API_KEY:
-    from langchain_core.messages import HumanMessage, AIMessage
+    from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
+    
+    # Inject values
+    system_prompt = system_prompt.replace("{TREATED_CONDITIONS}", TREATED_CONDITIONS)
+    system_prompt = system_prompt.replace("BOOKING_PLACEHOLDER_MARKER", "[BOOKING_LINK]")
     
     # Create the prompt with a placeholder for memory (Chat History)
     prompt = ChatPromptTemplate.from_messages([
         ("system", system_prompt),
         MessagesPlaceholder(variable_name="chat_history"),
-        ("human", "{input}"),
+        ("human", "{{input}}"),
         MessagesPlaceholder(variable_name="agent_scratchpad"),
-    ])
+    ], template_format="jinja2")
     
     llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.2, max_tokens=250, openai_api_key=OPENAI_API_KEY, streaming=True)
     agent = create_tool_calling_agent(llm, [], prompt)
@@ -212,10 +220,14 @@ class HTMLStreamHandler(BaseCallbackHandler):
         if self.token_count % 5 != 0:
             return
             
+        # 1. Replace marker with raw URL as per requirement
+        text_with_link = self.text.replace("[BOOKING_LINK]", BOOKING_LINK)
+        text_with_link = text_with_link.replace("{{BOOK a telemedicine Consultation}}", BOOKING_LINK)
+        
         try:
-            html = markdown.markdown(self.text)
+            html = markdown.markdown(text_with_link)
         except:
-            html = self.text
+            html = text_with_link
         self.container.markdown(f"""
         <div style="display: flex; justify-content: flex-start; margin-bottom: 10px; align-items: flex-end;">
             <div style="background-color: transparent; color: #1e293b; padding: 10px 15px; max-width: 75%; font-family: sans-serif; text-align: left;">
@@ -275,6 +287,7 @@ def get_demo_response(user_input: str, placeholder=None) -> str:
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 
+# --- CHAT UI ---
 for u_m, b_m in st.session_state.chat_history:
     display_message(u_m, "user")
     if b_m: display_message(b_m, "assistant")
@@ -302,6 +315,8 @@ if user_input:
         }, config={"callbacks": [handler]})
         
         reply = res.get("output", "Error")
+        # Replace marker with raw URL for history consistency
+        reply = reply.replace("[BOOKING_LINK]", BOOKING_LINK)
         st.session_state.chat_history[-1] = (user_input, reply)
         placeholder.empty()
         st.rerun()

@@ -6,12 +6,21 @@ from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
 from langchain.agents import create_tool_calling_agent, AgentExecutor
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_core.messages import HumanMessage, AIMessage
+from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
+import json
 from demo_logic import get_demo_response
+import config
 
-load_dotenv()
+print(f"DEBUG: Running app.py from {os.path.abspath(__file__)}")
+load_dotenv(os.path.join(os.path.dirname(__file__), '.env'), override=True)
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+if OPENAI_API_KEY:
+    # Strip quotes if they were accidentally included in the value
+    OPENAI_API_KEY = OPENAI_API_KEY.strip('"'+"'")
+    print(f"DEBUG: OPENAI_API_KEY found (starts with: {OPENAI_API_KEY[:7]}..., length: {len(OPENAI_API_KEY)})")
+else:
+    print("DEBUG: OPENAI_API_KEY not found in environment after load_dotenv")
 
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -29,16 +38,44 @@ app.add_middleware(
 # In-memory storage for session states
 session_store = {}
 
+# -----------------------------
+# Stats & Persistence
+# -----------------------------
+STATS_FILE = "stats.json"
+
+class StatsTracker:
+    @staticmethod
+    def _read_stats():
+        try:
+            with open(STATS_FILE, "r") as f:
+                return json.load(f)
+        except:
+            return {"total_users": 0, "chat_completions": 0, "booking_clicks": 0}
+
+    @staticmethod
+    def _write_stats(stats):
+        with open(STATS_FILE, "w") as f:
+            json.dump(stats, f, indent=2)
+
+    @classmethod
+    def increment(cls, key):
+        stats = cls._read_stats()
+        stats[key] = stats.get(key, 0) + 1
+        cls._write_stats(stats)
+
 @app.get("/")
 async def root():
     return {"message": "AI Symptom Checker API is running. Use POST /chat to interact."}
 
-# In-memory storage for session states
-session_store = {}
+@app.get("/ping")
+async def ping():
+    return {"status": "alive"}
 
-@app.get("/")
-async def root():
-    return {"message": "AI Symptom Checker API is running. Use POST /chat to interact."}
+@app.get("/stats")
+async def get_stats():
+    return StatsTracker._read_stats()
+
+
 
 
 # -----------------------------
@@ -97,22 +134,13 @@ async def get_chat_data(request: Request):
 # -----------------------------
 # System Prompt (Strengthened)
 # -----------------------------
-BOOKING_LINK = "https://www.optimantra.com/optimus/patient/patientaccess/servicesall?pid=U1o5cWpLTytaNDBMRU1DM1VRdE1ZZz09&lid=SWZ6WStZeWdvblZwMWJZQy96MUJkUT09"
+# -----------------------------
+# System Prompt
+# -----------------------------
+BOOKING_LINK = config.BOOKING_LINK
+TREATED_CONDITIONS = config.TREATED_CONDITIONS
 
-TREATED_CONDITIONS = """
-Our providers offer a wide range of services, including:
-- **General health consultations**
-- **Management of acute symptoms**: Cold, flu-like symptoms, sore throat, sinus infection, ear infection, fever, pink eye, cough, allergies & hay fever.
-- **Infections**: UTIs, vaginal discharge, yeast infections, minor skin infections (acne, eczema, rashes, minor cuts).
-- **Gastrointestinal**: Nausea, vomiting, upset stomach, stomach pain, digestive issues.
-- **Respiratory**: Asthma, allergies, or cough.
-- **Mental health support**: Stable conditions on medications (minor depression/anxiety).
-- **Wellness & Lifestyle**: Weight management (GLP-1 prescription & lifestyle), coaching, international travel advice, vaccine recommendations, hormone imbalances, sexual health.
-- **Medication refills**: Unscheduled prescriptions only.
-- **Urgent Care**: If it's an urgent care complaint, our providers can help.
-"""
-
-system_prompt = f"""
+system_prompt = """
 You are AskMyPhysician Associate AI, a professional and personable medical assistant.
 
 **Your Persona**: You are empathetic, kind, and professional. You should build rapport with the patient while staying focused on medical triage.
@@ -140,37 +168,48 @@ You are AskMyPhysician Associate AI, a professional and personable medical assis
    - Once duration is provided (e.g., "3 days"), ask: "Besides what you mentioned, **are you experiencing any other symptoms** such as body aches, chills, fatigue, or difficulty sleeping?"
    - Once they answer about other symptoms (or say "no"), ask for **age and biological sex**.
    - **MANDATORY**: You MUST have BOTH the patient's age AND biological sex before providing any medical recommendations or the booking link. If the user provides only one (e.g., just age), or tries to skip this step, politely explain that this information is essential for a safe and accurate medical triage and ask for the missing detail again.
-6. **Final Step**: ONLY after ALL information (symptoms, duration, other symptoms check, age, AND biological sex) has been collected, should you provide the telemedicine booking link: {BOOKING_LINK}
+6. **Final Step**: ONLY after ALL information (symptoms, duration, other symptoms check, age, AND biological sex) has been collected, should you provide the telemedicine booking link exactly as: [BOOKING_LINK]
 
-**Crucial Note**: If the user provides multiple pieces of information at once, do NOT ask for them again. Process all provided details and move to the next logical step. Never provide the booking link until the triage is fully complete with all required data points.
+**Crucial Note**: 
+- If the user provides multiple pieces of information at once (e.g., "I am a 23 year old girl"), do NOT ask for them again. Process both age (23) and biological sex (female) immediately.
+- Never provide a raw URL or external link. Use the [BOOKING_LINK] marker ONLY.
 """
 
-if not OPENAI_API_KEY:
-    print("WARNING: OPENAI_API_KEY not found. API will run in DEMO MODE.")
+# -----------------------------
+# System Prompt
+# -----------------------------
+# Inject values
+system_prompt = system_prompt.replace("{TREATED_CONDITIONS}", TREATED_CONDITIONS)
+system_prompt = system_prompt.replace("BOOKING_PLACEHOLDER_MARKER", "[BOOKING_LINK]")
 
 prompt = ChatPromptTemplate.from_messages([
     ("system", system_prompt),
     MessagesPlaceholder(variable_name="chat_history"),
-    ("human", "{input}"),
+    ("human", "{{input}}"),
     MessagesPlaceholder(variable_name="agent_scratchpad"),
-])
+], template_format="jinja2")
 
-llm = ChatOpenAI(
-    model="gpt-4o-mini",
-    temperature=0.2,
-    max_tokens=300,
-    openai_api_key=OPENAI_API_KEY
-)
+# -----------------------------
+# OpenAI Initialization
+# -----------------------------
+try:
+    if not OPENAI_API_KEY or OPENAI_API_KEY.strip() == "":
+        raise ValueError("OPENAI_API_KEY is missing or empty in .env")
 
-if OPENAI_API_KEY:
-    try:
-        agent = create_tool_calling_agent(llm, [], prompt)
-        agent_executor = AgentExecutor(agent=agent, tools=[], verbose=False)
-    except Exception as e:
-        print(f"Error creating agent: {e}. Falling back to Demo Mode.")
-        agent_executor = None
-else:
+    llm = ChatOpenAI(
+        model="gpt-4o-mini",
+        temperature=0.2,
+        max_tokens=300,
+        openai_api_key=OPENAI_API_KEY
+    )
+    agent = create_tool_calling_agent(llm, [], prompt)
+    agent_executor = AgentExecutor(agent=agent, tools=[], verbose=False)
+    print(f"!!! 🚀 RUNNING WITH OPENAI API 🚀 (Key: {OPENAI_API_KEY[:6]}...{OPENAI_API_KEY[-4:]})")
+except Exception as e:
+    llm = None
     agent_executor = None
+    print(f"!!! 🟢 RUNNING IN DEMO MODE 🟢 (Reason: {str(e)})")
+
 
 
 # -----------------------------
@@ -190,6 +229,9 @@ async def chat_endpoint(request: Request):
     # Initialize session if not exists
     if sid not in session_store:
         session_store[sid] = {"state": None, "history": []}
+        StatsTracker.increment("total_users")
+    
+
     
     # Priority: if history is provided in request, use it
     if history_raw:
@@ -211,32 +253,42 @@ async def chat_endpoint(request: Request):
 
         reply = result.get("output", "Error")
         
-        # Save to server-side history
+        # Replace marker with raw URL for frontend handling
+        formatted_reply = reply.replace("[BOOKING_LINK]", BOOKING_LINK)
+
+        # Save to history
         session_store[sid]["history"].append(HumanMessage(content=message))
-        session_store[sid]["history"].append(AIMessage(content=reply))
+        session_store[sid]["history"].append(AIMessage(content=formatted_reply))
 
         return {
             "status": "success",
-            "response": reply,
+            "response": formatted_reply,
             "session_id": sid
         }
 
     except Exception as e:
         err = str(e).lower()
-        if "quota" in err or "429" in err or "key" in err or "auth" in err or "demo" in err or agent_executor is None:
+        if any(keyword in err for keyword in ["quota", "429", "key", "auth", "demo", "connection", "timeout", "rate limit"]) or agent_executor is None:
             # Fallback to stateful demo logic
-            current_state = session_store[sid]["state"]
+            current_state = session_store[sid].get("state")
             reply, new_state = get_demo_response(message, current_state)
             
             # Save state
+            prev_step = session_store[sid].get("state", {}).get("step", "idle") if session_store[sid].get("state") else "idle"
             session_store[sid]["state"] = new_state
             
+            if new_state["step"] == "done" and prev_step != "done":
+                 StatsTracker.increment("chat_completions")
+
+            # Replace Placeholder with raw URL (Frontend will handle formatting)
+            formatted_reply = reply.replace("{{BOOK a telemedicine Consultation}}", BOOKING_LINK)
+
             return {
                 "status": "success",
-                "response": reply,
+                "response": formatted_reply,
                 "session_id": sid,
                 "current_step": new_state["step"],
-                "note": "Running in Demo Mode due to API issues"
+                "note": config.ERROR_MESSAGE if agent_executor is None else "API Issues"
             }
         
         raise HTTPException(status_code=500, detail=str(e))

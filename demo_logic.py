@@ -1,6 +1,7 @@
 import re
+import config
 
-BOOKING_LINK = "https://www.optimantra.com/optimus/patient/patientaccess/servicesall?pid=U1o5cWpLTytaNDBMRU1DM1VRdE1ZZz09&lid=SWZ6WStZeWdvblZwMWJZQy96MUJkUT09"
+BOOKING_LINK = config.BOOKING_LINK
 
 def get_demo_response(user_input: str, state: dict = None) -> (str, dict):
     """
@@ -20,9 +21,12 @@ def get_demo_response(user_input: str, state: dict = None) -> (str, dict):
     step = state.get("step", "idle")
 
     # --- Emergency check (always top priority) ---
-    emergency_keywords = ["can't breathe", "cannot breathe", "chest pain", "unconscious", "stroke", "heart attack", "heart pain", "severe bleeding", "emergency", "heavy bleeding", "bleeding heavily", "suicidal", "overdose"]
-    if any(s in u_low for s in emergency_keywords):
+    if any(s in u_low for s in config.SERIOUS_KEYWORDS):
         return "⚠️ **EMERGENCY**: Please call 911 or go to the ER immediately.", state
+
+    # --- Pain Handling (User Request #6) ---
+    if any(p in u_low for p in config.PAIN_KEYWORDS):
+        return f"{config.PAIN_MESSAGE}\n\n{BOOKING_LINK}", state
 
     # --- Helper functions ---
     def has_symptoms(text):
@@ -61,6 +65,9 @@ def get_demo_response(user_input: str, state: dict = None) -> (str, dict):
         """Check for biological sex patterns."""
         patterns = [
             r"\bmale\b", r"\bfemale\b",
+            r"\bgirl\b", r"\bboy\b",
+            r"\bwoman\b", r"\bman\b",
+            r"\blady\b", r"\bgentleman\b",
             r"\b\d{1,3}\s*[mf]\b"
         ]
         return any(re.search(p, text) for p in patterns)
@@ -106,7 +113,7 @@ def get_demo_response(user_input: str, state: dict = None) -> (str, dict):
                 state["step"] = "done"
                 return (
                     f"Hello! 👋 Based on your symptoms and the details provided, **a professional telemedicine consultation is strongly recommended**.\n\n"
-                    f"👉 **[Click here to Book Your Telemedicine Visit]({BOOKING_LINK})**",
+                    f"{BOOKING_LINK}",
                     state
                 )
             
@@ -139,6 +146,9 @@ def get_demo_response(user_input: str, state: dict = None) -> (str, dict):
                 "How can I assist you with your health today?",
                 state
             )
+
+        if any(b in u_low for b in config.BOOKING_INTENT_KEYWORDS):
+            return f"I can certainly help you book an appointment. {BOOKING_LINK}", state
 
         return "I'm sorry, I didn't quite understand that. It looks like there might be a typing mistake. Could you please describe your symptoms or how you're feeling so I can help? 🩺", state
 
@@ -198,7 +208,7 @@ def get_demo_response(user_input: str, state: dict = None) -> (str, dict):
             f"you've described, **a professional telemedicine consultation is strongly recommended**. "
             f"Our experienced medical team will properly evaluate your condition, provide a diagnosis, "
             f"and recommend the right treatment plan.\n\n"
-            f"👉 **[Click here to Book Your Telemedicine Visit]({BOOKING_LINK})**\n\n"
+            f"{BOOKING_LINK}\n\n"
             f"*Please don't delay — getting the right care early makes a big difference.*",
             state
         )
@@ -208,7 +218,7 @@ def get_demo_response(user_input: str, state: dict = None) -> (str, dict):
             return "You're welcome! 😊 Take care and feel better soon. Don't hesitate to reach out if you need anything else.", state
         return (
             f"I've already recommended a telemedicine consultation for your condition. "
-            f"You can book your visit here: [Click here to Book Your Visit]({BOOKING_LINK})\n\n"
+            f"You can book your visit here: {BOOKING_LINK}\n\n"
             "Is there anything else I can help you with?",
             state
         )

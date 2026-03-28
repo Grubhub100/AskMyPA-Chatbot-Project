@@ -32,7 +32,7 @@ Welcome to the **AskMyPhysician Associate AI**, a professional, empathetic, and 
 
 ## 📋 Prerequisites
 
-- Python 3.9+
+- Python 3.10.11
 - OpenAI API Key (Optional for Demo Mode)
 
 ---
@@ -83,7 +83,25 @@ The API will be available at `http://127.0.0.1:8000`.
 
 ### POST `/chat`
 
-Main endpoint for interacting with the AI Assistant.
+Main endpoint for interacting with the AI Assistant. Supports JSON and Form Data.
+
+### GET `/ping`
+Lightweight endpoint for uptime monitoring (e.g., UptimeRobot).
+- **Response**: `{"status": "alive"}`
+
+### GET `/stats`
+Returns basic usage statistics (Total Users, Booking Clicks).
+- **Response**: `{"total_users": X, "booking_clicks": Y, ...}`
+
+---
+
+## ⚙️ Configuration (`config.py`)
+You can easily update the following without touching the code:
+- **Booking Links**: Point to any provider scheduling tool.
+- **Pain Treatment Messages**: Specific guidance for musculoskeletal pain.
+- **Disclaimers & Error Messages**: Customizable clinical disclaimers.
+
+---
 
 **Request Body (JSON or Form Data):**
 
@@ -117,6 +135,27 @@ Main endpoint for interacting with the AI Assistant.
 The API is specifically tuned to work with WordPress frontends.
 - **CORS Support**: Pre-configured to accept requests from external domains.
 - **Form Data Support**: Compatible with standard WordPress form submission methods.
+
+---
+
+## ☁️ Render Deployment & Troubleshooting
+
+To ensure a smooth deployment on [Render](https://render.com/), follow these crucial steps:
+
+### 1. Environment Variables
+In your Render Dashboard, navigate to **Environment** and add the following:
+- `OPENAI_API_KEY`: Your full OpenAI API key (starts with `sk-...`).
+- `PYTHON_VERSION`: `3.10.11` (this is also specified in `runtime.txt`).
+
+### 2. Handling Crashes (Demo Mode)
+If your app shows a "No open ports detected" error or crashes during startup, it is likely due to a missing or invalid API key. We have updated the code to handle this gracefully:
+- The app will now start even without a key, automatically falling back to **Demo Mode**.
+- Check your Render logs for: `WARNING: LLM initialization skipped. API will run in DEMO MODE.`
+
+### 3. "Secret Files" Error
+If you cannot click **Save Changes** in Render due to red errors:
+- Look for any empty "Secret Files" sections or duplicate keys.
+- Delete the problematic secret file entries or fix the duplicates to enable the save button.
 
 ---
 
